@@ -1,82 +1,110 @@
-#include <ESP8266WiFi.h>
+#include <SoftwareSerial.h>
 
+// Define the WiFi settings
 const char* ssid = "Sensor";
 const char* password = "Sensor_ESP8266_1";
 
-const char* host = "yourserver.com"; // replace with your server address
+// Define the server settings
+const char* serverName = "yourserver.com";
+const int serverPort = 80;
+const String serverPath = "/senddata.php";
 
-const int coPin = A0; // analog input pin for CO sensor
-const int ledPin = 2; // output pin for LED alarm
+// Define the CO sensor pin
+const int coSensorPin = A0;
 
-float coConcentration; // variable to store CO concentration value
+// Define the LED and buzzer pins
+const int ledPin = 2;
+const int buzzerPin = 3;
 
-unsigned long startTime; // variable to store start time for 1-hour CO alarm
-bool oneHourAlarmTriggered = false; // flag to indicate if 1-hour CO alarm has been triggered
-bool eightHourAlarmTriggered = false; // flag to indicate if 8-hour CO alarm has been triggered
+// Define the Kalman filter variables
+const float R = 4; // Measurement noise variance
+const float Q = 0.0001; // Process noise variance
+float x = 0; // State estimate
+float P = 1; // State error covariance
 
-WiFiClient client;
+// Define the CO concentration thresholds
+const int coThreshold1 = 9; // ppm
+const int coThreshold2 = 25; // ppm
+const int coThreshold1Time = 8; // hours
+const int coThreshold2Time = 1; // hour
+unsigned long coThreshold1StartTime = 0;
+unsigned long coThreshold2StartTime = 0;
+
+// Define the variables for storing the previous CO concentration and time
+float previousCo = 0;
+unsigned long previousTime = 0;
+
+// Define the software serial object for the ESP8266
+SoftwareSerial esp8266(5, 6);
 
 void setup() {
+  // Initialize the serial port for debugging
+  Serial.begin(9600);
+
+  // Initialize the LED and buzzer pins
   pinMode(ledPin, OUTPUT);
+  pinMode(buzzerPin, OUTPUT);
 
-  Serial.begin(115200);
-  delay(10);
+  // Initialize the software serial object for the ESP8266
+  esp8266.begin(9600);
 
-  // Connect to WiFi network
-  Serial.println();
-  Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-
-  WiFi.begin(ssid, password);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
+  // Connect to the WiFi network
+  connectToWiFi();
 }
 
 void loop() {
-  coConcentration = analogRead(coPin) * 5.0 / 1024.0; // read analog input and convert to voltage
-  coConcentration = coConcentration / 0.2; // convert voltage to CO concentration (ppm)
+  // Read the CO concentration
+  float co = readCO();
 
-  Serial.print("CO concentration: ");
-  Serial.print(coConcentration);
-  Serial.println(" ppm");
+  // Apply the Kalman filter to the CO measurement
+  kalmanFilter(co);
 
-  if (coConcentration > 25.0 && !oneHourAlarmTriggered) { // check for 1-hour CO alarm condition
-    digitalWrite(ledPin, HIGH); // turn on LED alarm
-    sendAlarmData(); // send alarm data to server
-    oneHourAlarmTriggered = true; // set 1-hour alarm triggered flag
-    eightHourAlarmTriggered = true; // set 8-hour alarm triggered flag to prevent 8-hour alarm from triggering
-    startTime = millis(); // store start time for 1-hour CO alarm
-  } else if (coConcentration > 9.0 && millis() - startTime >= 28800000 && !eightHourAlarmTriggered) { // check for 8-hour CO alarm condition
-    digitalWrite(ledPin, HIGH); // turn on LED alarm
-    sendAlarmData(); // send alarm data to server
-    eightHourAlarmTriggered = true; // set 8-hour alarm triggered flag
-    oneHourAlarmTriggered = true; // set 1-hour alarm triggered flag to prevent 1-hour alarm from triggering
-  } else {
-    digitalWrite(ledPin, LOW); // turn off LED alarm
+  // Send the CO concentration to the server
+  sendData(co);
+
+  // Check if the CO concentration has exceeded the threshold for 8 hours
+  if (co >= coThreshold1) {
+    if (coThreshold1StartTime == 0) {
+      coThreshold1StartTime = millis();
+    }
+    else if (millis() - coThreshold1StartTime >= coThreshold1Time * 3600000UL) {
+      triggerAlarm();
+      sendAlarmData(co);
+      coThreshold1StartTime = 0;
+    }
+  }
+  else {
+    coThreshold1StartTime = 0;
   }
 
-  delay(1000);
-}
-
-void sendAlarmData() {
-  if (client.connect(host, 80)) {
-    Serial.println("Sending alarm data...");
-
-    // send HTTP request to server
-    client.println("GET /alarm.php?value=1 HTTP/1.1");
-    client.println("Host: yourserver.com"); // replace with your server address
-    client.println("Connection: close");
-    client.println();
-  } else {
-    Serial.println("Connection to server failed");
+  // Check if the CO concentration has exceeded the threshold for 1 hour
+  if (co >= coThreshold2) {
+    if (coThreshold2StartTime == 0) {
+      coThreshold2StartTime = millis();
+    }
+    else if (millis() - coThreshold2StartTime >= coThreshold2Time * 3600000UL) {
+      triggerAlarm();
+      sendAlarmData(co);
+      coThreshold2StartTime = 0;
+    }
   }
+  else {
+    coThreshold2StartTime = 0;
+  }
+
+  // Store the current CO concentration and time for the next loop iteration
+  previousCo = co;
+  previousTime = millis();
 }
+
+void connectToWiFi() {
+  // Connect to the WiFi network
+  WiFi.begin(ssid, password);
+
+  // Wait for the connection to be established
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting to WiFi...");
+  }
+
+  // Print the local
