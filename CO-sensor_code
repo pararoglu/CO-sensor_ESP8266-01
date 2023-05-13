@@ -1,0 +1,82 @@
+#include <ESP8266WiFi.h>
+
+const char* ssid = "Sensor";
+const char* password = "Sensor_ESP8266_1";
+
+const char* host = "yourserver.com"; // replace with your server address
+
+const int coPin = A0; // analog input pin for CO sensor
+const int ledPin = 2; // output pin for LED alarm
+
+float coConcentration; // variable to store CO concentration value
+
+unsigned long startTime; // variable to store start time for 1-hour CO alarm
+bool oneHourAlarmTriggered = false; // flag to indicate if 1-hour CO alarm has been triggered
+bool eightHourAlarmTriggered = false; // flag to indicate if 8-hour CO alarm has been triggered
+
+WiFiClient client;
+
+void setup() {
+  pinMode(ledPin, OUTPUT);
+
+  Serial.begin(115200);
+  delay(10);
+
+  // Connect to WiFi network
+  Serial.println();
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void loop() {
+  coConcentration = analogRead(coPin) * 5.0 / 1024.0; // read analog input and convert to voltage
+  coConcentration = coConcentration / 0.2; // convert voltage to CO concentration (ppm)
+
+  Serial.print("CO concentration: ");
+  Serial.print(coConcentration);
+  Serial.println(" ppm");
+
+  if (coConcentration > 25.0 && !oneHourAlarmTriggered) { // check for 1-hour CO alarm condition
+    digitalWrite(ledPin, HIGH); // turn on LED alarm
+    sendAlarmData(); // send alarm data to server
+    oneHourAlarmTriggered = true; // set 1-hour alarm triggered flag
+    eightHourAlarmTriggered = true; // set 8-hour alarm triggered flag to prevent 8-hour alarm from triggering
+    startTime = millis(); // store start time for 1-hour CO alarm
+  } else if (coConcentration > 9.0 && millis() - startTime >= 28800000 && !eightHourAlarmTriggered) { // check for 8-hour CO alarm condition
+    digitalWrite(ledPin, HIGH); // turn on LED alarm
+    sendAlarmData(); // send alarm data to server
+    eightHourAlarmTriggered = true; // set 8-hour alarm triggered flag
+    oneHourAlarmTriggered = true; // set 1-hour alarm triggered flag to prevent 1-hour alarm from triggering
+  } else {
+    digitalWrite(ledPin, LOW); // turn off LED alarm
+  }
+
+  delay(1000);
+}
+
+void sendAlarmData() {
+  if (client.connect(host, 80)) {
+    Serial.println("Sending alarm data...");
+
+    // send HTTP request to server
+    client.println("GET /alarm.php?value=1 HTTP/1.1");
+    client.println("Host: yourserver.com"); // replace with your server address
+    client.println("Connection: close");
+    client.println();
+  } else {
+    Serial.println("Connection to server failed");
+  }
+}
