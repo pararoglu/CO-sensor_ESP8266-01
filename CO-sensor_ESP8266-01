@@ -1,0 +1,77 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <Kalman.h>
+
+const char* ssid = "Sensor"; // Your Wi-Fi SSID
+const char* password = "Sensor_ESP8266_1"; // Your Wi-Fi password
+
+const int CO_PIN = A0; // Pin for CO sensor
+const int LED_PIN = 2; // Pin for LED indicator
+
+const int SAMPLE_INTERVAL = 1000; // Sample interval in ms
+const int REPORT_INTERVAL = 30000; // Report interval in ms
+
+// Kalman filter settings
+const float R_MEASUREMENT = 5;
+const float Q_ESTIMATE = 0.001;
+
+// Wi-Fi client
+WiFiClient wifiClient;
+
+// Kalman filter object
+Kalman kalmanFilter(R_MEASUREMENT, Q_ESTIMATE);
+
+void setup() {
+  // Set up serial communication
+  Serial.begin(9600);
+  
+  // Connect to Wi-Fi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting to WiFi...");
+  }
+  Serial.println("Connected to WiFi");
+
+  // Set up pins
+  pinMode(LED_PIN, OUTPUT);
+
+  // Wait for CO sensor to warm up
+  Serial.println("Warming up CO sensor...");
+  delay(10000);
+}
+
+void loop() {
+  // Read CO sensor
+  int rawValue = analogRead(CO_PIN);
+  float voltage = (float) rawValue / 1023 * 5.0; // Convert to voltage
+  float coPPM = kalmanFilter.updateEstimate(voltage * 1000); // Convert to ppm using datasheet conversion factor
+  
+  // Print CO concentration
+  Serial.print("CO concentration: ");
+  Serial.print(coPPM);
+  Serial.println(" ppm");
+
+  // Check for alarm conditions
+  if (coPPM > 25 || (coPPM > 9 && millis() > 8 * 60 * 60 * 1000)) {
+    // Trigger alarm
+    digitalWrite(LED_PIN, HIGH);
+
+    // Send data to server
+    if (WiFi.status() == WL_CONNECTED) {
+      HTTPClient http;
+      http.begin(wifiClient, "http://yourserver.com/alarm");
+      http.addHeader("Content-Type", "application/json");
+      String json = "{\"coPPM\":" + String(coPPM) + "}";
+      http.POST(json);
+      http.end();
+    }
+
+    // Wait for a few seconds before turning off alarm
+    delay(5000);
+    digitalWrite(LED_PIN, LOW);
+  }
+
+  // Wait for sample interval
+  delay(SAMPLE_INTERVAL);
+}
